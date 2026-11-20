@@ -50,7 +50,7 @@ infra/
 - **Secret values.** Key Vault holds the webhook secrets and the Salesforce client credentials. The secret owners set the values with `az keyvault secret set` under just-in-time access. They never pass through the repository or the pipeline.
 - **Existing platform resources:** Log Analytics workspace, on-call action group, API Manager and IdP. They are passed in by resource id.
 - **API Manager routes:** owned by the integration platform team.
-- **SQL schema:** Flyway migrations run as a CD step.
+- **SQL schema:** Flyway migrations, planned as a CD step before the grants (not written yet).
 
 ## Security choices (NFR6)
 

@@ -1,0 +1,140 @@
+name: deploy-environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+      image-tag:
+        type: string
+        required: true
+      source-registry:
+        description: Registry of the previous environment to import the SAME image from ('' = load the built artifact).
+        type: string
+        required: true
+    outputs:
+      registry:
+        value: ${{ jobs.deploy.outputs.registry }}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  what-if:
+    name: What-if (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}-plan
+    env:
+      IMAGE_TAG: ${{ inputs.image-tag }}
+      LOG_ANALYTICS_WORKSPACE_ID: ${{ vars.LOG_ANALYTICS_WORKSPACE_ID }}
+      ONCALL_ACTION_GROUP_ID: ${{ vars.ONCALL_ACTION_GROUP_ID }}
+      SQL_ADMIN_GROUP_OBJECT_ID: ${{ vars.SQL_ADMIN_GROUP_OBJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login (OIDC, read-only "plan" identity)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: What-if
+        run: |
+          az deployment group what-if \
+            --resource-group "rg-paynotif-${{ inputs.environment }}" \
+            --template-file infra/main.bicep \
+            --parameters "infra/environments/${{ inputs.environment }}.bicepparam" \
+            --result-format FullResourcePayloads > what-if.txt
+          {
+            echo "## What-if: ${{ inputs.environment }}"
+            echo '```'
+            cat what-if.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Block destructive changes without an explicit override
+        run: |
+          if grep -E '^\s*- ' what-if.txt | grep -qiE 'Microsoft\.(ServiceBus|Sql|KeyVault)'; then
+            echo "What-if deletes a stateful resource (Service Bus / SQL / Key Vault). Refusing to continue." >&2
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy (${{ inputs.environment }})
+    needs: what-if
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    outputs:
+      registry: ${{ steps.infra.outputs.registry }}
+    env:
+      IMAGE_TAG: ${{ inputs.image-tag }}
+      LOG_ANALYTICS_WORKSPACE_ID: ${{ vars.LOG_ANALYTICS_WORKSPACE_ID }}
+      ONCALL_ACTION_GROUP_ID: ${{ vars.ONCALL_ACTION_GROUP_ID }}
+      SQL_ADMIN_GROUP_OBJECT_ID: ${{ vars.SQL_ADMIN_GROUP_OBJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Azure login (OIDC, environment deployment identity)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy infrastructure only (registry, identities, data, messaging, alerts)
+        id: infra
+        run: |
+          # deployApps=false: incremental mode leaves the running apps untouched until the image exists.
+          out=$(az deployment group create \
+            --name "infra-${{ github.run_id }}" \
+            --resource-group "rg-paynotif-${{ inputs.environment }}" \
+            --template-file infra/main.bicep \
+            --parameters "infra/environments/${{ inputs.environment }}.bicepparam" \
+            --parameters deployApps=false \
+            --query properties.outputs -o json)
+          echo "registry=$(echo "$out" | jq -r .registryLoginServer.value)" >> "$GITHUB_OUTPUT"
+          echo "sql=$(echo "$out" | jq -r .sqlServerFqdn.value)" >> "$GITHUB_OUTPUT"
+
+      - name: Download the built image (first environment only)
+        if: inputs.source-registry == ''
+        uses: actions/download-artifact@v4
+        with:
+          name: image
+
+      - name: Publish image to this environment's registry (same digest promoted, never rebuilt)
+        run: |
+          registry="${{ steps.infra.outputs.registry }}"
+          if [ -z "${{ inputs.source-registry }}" ]; then
+            docker load -i image.tar
+            az acr login --name "${registry%%.*}"
+            docker tag payment-notifications:${{ inputs.image-tag }} "$registry/payment-notifications:${{ inputs.image-tag }}"
+            docker push "$registry/payment-notifications:${{ inputs.image-tag }}"
+          else
+            az acr import --name "${registry%%.*}" \
+              --source "${{ inputs.source-registry }}/payment-notifications:${{ inputs.image-tag }}" \
+              --image "payment-notifications:${{ inputs.image-tag }}" --force
+          fi
+
+      - name: Database migrations and grants (Entra ID token of the deployment identity, member of the SQL admin group)
+        run: |
+          # Flyway migrations are a next step (not in this repository). The grants script is idempotent.
+          token=$(az account get-access-token --resource https://database.windows.net/ --query accessToken -o tsv)
+          sqlcmd -S "${{ steps.infra.outputs.sql }}" -d payments --access-token "$token" \
+            -v env="${{ inputs.environment }}" -i infra/sql/grant-database-roles.sql
+
+      - name: Roll out the new image
+        run: |
+          az deployment group create \
+            --name "app-${{ github.run_id }}" \
+            --resource-group "rg-paynotif-${{ inputs.environment }}" \
+            --template-file infra/main.bicep \
+            --parameters "infra/environments/${{ inputs.environment }}.bicepparam"
+
+      - name: Post-deployment verification (revision healthy, replicas ready)
+        run: |
+          for app in intake state-worker sync-worker ops-api; do
+            name="ca-paynotif-${{ inputs.environment }}-$app"
+            state=$(az containerapp revision list -g "rg-paynotif-${{ inputs.environment }}" -n "$name" \
+              --query "[?properties.active].properties.healthState | [0]" -o tsv)
+            echo "$name: $state"
+            [ "$state" = "Healthy" ] || { echo "Unhealthy revision: roll back by redeploying the previous IMAGE_TAG" >&2; exit 1; }
+          done

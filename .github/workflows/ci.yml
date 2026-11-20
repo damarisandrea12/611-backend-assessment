@@ -1,0 +1,139 @@
+name: ci
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build, test, coverage (practical/)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: practical
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Build and test (unit + integration, JaCoCo line coverage gate >= 80%)
+        run: mvn -B -ntp verify
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            practical/target/surefire-reports/
+            practical/target/site/jacoco/
+      - name: Build container image (not pushed)
+        run: docker build -t payment-notifications:${{ github.sha }} .
+      - name: Scan image for HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: payment-notifications:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+
+  codeql:
+    name: SAST (CodeQL, Java)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+          queries: security-extended
+      - name: Build for analysis
+        working-directory: practical
+        run: mvn -B -ntp -DskipTests package
+      - uses: github/codeql-action/analyze@v3
+
+  dependencies-and-secrets:
+    name: Secret scan and dependency vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Secret scan (gitleaks, full history)
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.18.4 \
+            detect --source /repo --config /repo/.gitleaks.toml --redact --verbose
+      - name: Dependency vulnerabilities (Trivy, Maven)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          scan-type: fs
+          scan-ref: practical
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+      - name: Dependency review (new vulnerable or disallowed-licence dependencies in the PR)
+        if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high
+
+  contracts:
+    name: API contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Lint OpenAPI (webhooks)
+        run: npx --yes @redocly/cli@1.25.0 lint docs/api/webhooks.openapi.yaml
+
+  iac:
+    name: Infrastructure as code (Bicep)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      IMAGE_TAG: ci
+      LOG_ANALYTICS_WORKSPACE_ID: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.OperationalInsights/workspaces/law
+      ONCALL_ACTION_GROUP_ID: /subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg/providers/Microsoft.Insights/actionGroups/ag
+      SQL_ADMIN_GROUP_OBJECT_ID: 00000000-0000-0000-0000-000000000000
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Bicep
+        run: az bicep install
+      - name: Build (compile) and lint main.bicep
+        run: |
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          az bicep lint --file infra/main.bicep
+      - name: Build parameter files for every environment
+        run: |
+          for env in dev test prod; do
+            az bicep build-params --file infra/environments/$env.bicepparam --stdout > /dev/null
+          done
+      - name: Misconfiguration scan (Checkov)
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infra
+          framework: bicep
+          soft_fail: false

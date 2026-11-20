@@ -1,0 +1,21 @@
+# Secret scanning configuration (used by .github/workflows/ci.yml).
+# Default gitleaks rules apply. The ONLY allow-listed locations are the fictional provider SANDBOX
+# secrets that the assessment publishes in reference/ (and that the tests must use to check the
+# official test vectors). PR-214's diff is review material and intentionally shows a leaked secret.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fictional sandbox test secrets published by the assessment"
+# Built-in Azure role definition ids (public GUIDs, not secrets) are flagged by the generic rule.
+regexTarget = "match"
+regexes = [
+  '''[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}''',
+]
+paths = [
+  '''^reference/providers/.*/WEBHOOK_SPEC\.md$''',
+  '''^reference/providers/.*/samples/.*\.json$''',  # fictional payment tokens in provider samples
+  '''^pr-review/PR-214\.diff$''',
+  '''^practical/src/test/java/com/meridian/payments/intake/support/ProviderSamples\.java$''',
+  '''^practical/README\.md$''',
+]

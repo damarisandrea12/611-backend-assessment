@@ -1,0 +1,77 @@
+name: cd
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: payment-notifications
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  guard:
+    name: CD enabled?
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - id: check
+        run: echo "enabled=${{ vars.CD_ENABLED == 'true' }}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build and test once (the same artifact is promoted to every environment)
+    needs: guard
+    if: needs.guard.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - run: mvn -B -ntp verify
+        working-directory: practical
+      - run: docker build -t ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} practical
+      - run: docker save ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }} -o image.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: image.tar
+          retention-days: 7
+
+  deploy-dev:
+    needs: build
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment: dev
+      image-tag: ${{ github.sha }}
+      source-registry: ''
+    secrets: inherit
+
+  deploy-test:
+    needs: deploy-dev
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment: test
+      image-tag: ${{ github.sha }}
+      source-registry: ${{ needs.deploy-dev.outputs.registry }}
+    secrets: inherit
+
+  deploy-prod:
+    needs: deploy-test
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment: prod
+      image-tag: ${{ github.sha }}
+      source-registry: ${{ needs.deploy-test.outputs.registry }}
+    secrets: inherit
