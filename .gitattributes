@@ -1,0 +1,4 @@
+# Do not change line endings in signed samples, or the HMAC tests fail.
+reference/providers/**/samples/*.json -text
+practical/src/test/resources/** -text
+*.sh text eol=lf
