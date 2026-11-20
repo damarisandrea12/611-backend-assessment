@@ -5,10 +5,10 @@ Intake of premium payment notifications from **Quetzal Pagos (Mexico)** and **An
 | Requirement | Where it is met | Proven by |
 |---|---|---|
 | **FR1** authenticity | `QuetzalSignatureVerifier`, `AndinaSignatureVerifier`: HMAC over the raw bytes, constant-time compare, timestamp tolerance, secret rotation, fail-closed without a secret | `*SignatureVerifierTest` with the 7 reference test vectors |
-| **FR2** canonical event | `QuetzalAdapter`, `AndinaAdapter` → `CanonicalPaymentEvent` | `*AdapterTest`, `CanonicalEventSchemaTest` |
+| **FR2** canonical event | `QuetzalAdapter`, `AndinaAdapter` -> `CanonicalPaymentEvent` | `*AdapterTest`, `CanonicalEventSchemaTest` |
 | **FR4** exactly once | Idempotency key per provider, used as `messageId`; first-line dedup in Intake (fail-open) | `IntakeServiceTest.Duplicates` |
-| **NFR3** no loss | `2xx` only after the broker confirms; broker failure → `503` | `IntakeServiceTest.Durability` |
-| **NFR4** provider timeouts | Publish has a 3 s budget; slow broker → `503` | `slowBrokerAnswersWithinBudget` |
+| **NFR3** no loss | `2xx` only after the broker confirms; broker failure -> `503` | `IntakeServiceTest.Durability` |
+| **NFR4** provider timeouts | Publish has a 3 s budget; slow broker -> `503` | `slowBrokerAnswersWithinBudget` |
 | **NFR6** privacy and secrets | Payer data dropped in the adapters; logs carry ids only; secrets from the environment | `personalDataIsNeverLogged` |
 | **NFR9** extensibility | `ProviderAdapter` interface; `IntakeService` has no provider-specific code | Austral = one new adapter |
 
@@ -39,7 +39,7 @@ Run from `practical/`: the tests read the provider samples directly from `../ref
 | `QuetzalAdapterTest`, `AndinaAdapterTest` | Status and amount mapping. An Andina retry has the same idempotency key. INC-0412 references are normalized or parked. Unknown types are ignored, unknown states rejected. Payer data is dropped. |
 | `CanonicalEventSchemaTest` | Every mapped sample is valid against the JSON Schema. |
 | `PolicyNumberNormalizerTest`, `AmountsTest` | Policy number rules and currency units (CLP has no decimals). |
-| `IntakeServiceTest` | Duplicates published once, broker down → `503`, slow broker → `503`, oversized body → `413`. |
+| `IntakeServiceTest` | Duplicates published once, broker down -> `503`, slow broker -> `503`, oversized body -> `413`. |
 | `WebhookIntakeIntegrationTest` | The full HTTP flow, including that no personal data or secrets appear in the logs. |
 
 ## Project structure
@@ -47,7 +47,7 @@ Run from `practical/`: the tests read the provider samples directly from `../ref
 ```
 practical/src/main/java/com/meridian/payments/intake/
 ├── web/          # WebhookController: POST /webhooks/{provider}
-├── core/         # IntakeService: verify → map → dedup → publish → 2xx
+├── core/         # IntakeService: verify -> map -> dedup -> publish -> 2xx
 ├── provider/     # ProviderAdapter + Quetzal and Andina (signature + mapping)
 ├── canonical/    # canonical event, normalizer, amounts
 ├── crypto/       # HMAC-SHA256 + constant-time compare

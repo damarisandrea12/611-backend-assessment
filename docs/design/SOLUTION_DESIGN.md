@@ -4,7 +4,7 @@ Scope: FR1-FR7 for Mexico, Colombia and Chile. Decisions: [`docs/adr/`](../adr/)
 
 **Main idea:** we keep the latest state of each payment in our own store and send it to Salesforce from there, not from a stream of events. Duplicates, late events, Salesforce outages and the API budget are handled in one place. Salesforce never sees a stale status.
 
-Flow: webhook → API Manager → **Intake** (check signature, map, publish) → Service Bus queue → **Payment State worker** (dedup + order in Azure SQL, publish canonical event) → **Salesforce Sync worker** (batch upsert of the latest state).
+Flow: webhook -> API Manager -> **Intake** (check signature, map, publish) -> Service Bus queue -> **Payment State worker** (dedup + order in Azure SQL, publish canonical event) -> **Salesforce Sync worker** (batch upsert of the latest state).
 
 ---
 
@@ -48,11 +48,11 @@ flowchart TB
 
 | Boundary | Control |
 |---|---|
-| 1 → 2 | TLS at the API Manager. Authenticity is the **provider HMAC** (FR1). Providers cannot get an IdP token (A-04). |
-| 2 → 3 | Private Intake. API Manager uses a machine-to-machine token. Raw body is forwarded unchanged (A-03). |
+| 1 -> 2 | TLS at the API Manager. Authenticity is the **provider HMAC** (FR1). Providers cannot get an IdP token (A-04). |
+| 2 -> 3 | Private Intake. API Manager uses a machine-to-machine token. Raw body is forwarded unchanged (A-03). |
 | Inside 3 | Managed identities, least-privilege RBAC, private endpoints. |
-| 3 → 4 | OAuth client credentials. Secret in Key Vault. Outbound only. |
-| 3 → 5 | One topic subscription per consumer. **Listen** only on that subscription. No payer personal data in events. |
+| 3 -> 4 | OAuth client credentials. Secret in Key Vault. Outbound only. |
+| 3 -> 5 | One topic subscription per consumer. **Listen** only on that subscription. No payer personal data in events. |
 | Humans | Ops API through the API Manager. IdP role. Read-only. Queries are audited. |
 
 Payer name, national ID and email are **dropped in the adapter**. They never reach the queue, the store, the events or the logs (NFR6).
@@ -119,7 +119,7 @@ Essential fields:
 | Field | Meaning |
 |---|---|
 | `idempotencyKey` | Identity of this business event |
-| `paymentKey` | `<PROVIDER>:<transactionId>` → Salesforce `Payment_Key__c` |
+| `paymentKey` | `<PROVIDER>:<transactionId>` -> Salesforce `Payment_Key__c` |
 | `country` / `provider` | `MX`, `CO`, `CL` and `QUETZAL`,`ANDINA`,`AUSTRAL` |
 | `status` | `PENDING` / `CAPTURED` / `FAILED` / `REFUNDED` |
 | `policyNumber` | Normalized `POL-<CC>-<9 digits>`, or `null` if unresolved (A-08) |
@@ -132,7 +132,7 @@ Essential fields:
 |---|---|---|---|
 | Transaction id | `data.charge.id` | `transaccion.id` | `payment.paymentId` |
 | Policy reference | `data.charge.reference` | `transaccion.referencia` | `payment.policyNumber` |
-| Amount | `amount` ÷ 100 (centavos) | `valor` (already major) | `amount` (CLP, no decimals) |
+| Amount | `amount` / 100 (centavos) | `valor` (already major) | `amount` (CLP, no decimals) |
 | `PENDING` | - | `PENDIENTE` | - |
 | `CAPTURED` | `charge.succeeded` | `APROBADA` | `PAYMENT_CONFIRMED` |
 | `FAILED` | `charge.failed` | `RECHAZADA` | `PAYMENT_REJECTED` |
@@ -155,7 +155,7 @@ Policy reference: trim, upper-case, prefix `POL-<CC>-` if it is exactly 9 digits
 
 Checked in two places:
 
-1. **Intake (first line, fail-open):** same key → `200` and do not publish again. If the store is down, publish anyway. A duplicate is safer than a lost payment.
+1. **Intake (first line, fail-open):** same key -> `200` and do not publish again. If the store is down, publish anyway. A duplicate is safer than a lost payment.
 2. **State worker (authoritative):** unique key on `notification`. Insert and state update in one SQL transaction.
 
 **Precedence:** `PENDING` < `CAPTURED`/`FAILED` < `REFUNDED`. Apply the event only if the new rank is higher. Equal rank: same status and a later `statusChangedAt` (for example a later partial refund). `CAPTURED` vs `FAILED` on the same payment is an anomaly: keep the first, alert (A-09). Salesforce is written from the **latest** stored state, so a late `CAPTURED` after `REFUNDED` never reinstates a refunded policy.
@@ -209,7 +209,7 @@ No payer personal data. No raw payloads. Body stored as SHA-256 only.
 
 `notification_attempt` - every attempt id (Andina retries get a new `notificacion_id`):
 
-- `(provider, provider_event_id)` (PK) → `event_key`
+- `(provider, provider_event_id)` (PK) -> `event_key`
 
 **Indexes:** `sync_state` (claim pending rows for Salesforce), `provider + provider_event_id` (FR7 by attempt id), `policy_number`, `correlation_id`.
 **Partitioning:** not needed. Peak ~ 120k rows/day; point lookups on indexes are enough.

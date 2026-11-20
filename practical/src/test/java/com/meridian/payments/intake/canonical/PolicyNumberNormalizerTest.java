@@ -8,7 +8,7 @@ import org.junit.jupiter.params.provider.CsvSource;
 
 class PolicyNumberNormalizerTest {
 
-    @ParameterizedTest(name = "{0} / {1} → {2}")
+    @ParameterizedTest(name = "{0} / {1} -> {2}")
     @CsvSource(nullValues = "null", value = {
             "POL-MX-000412785, MX, POL-MX-000412785",
             "pol-mx-000412785, MX, POL-MX-000412785",
